@@ -803,17 +803,6 @@ def test_none_tolerance_means_exact_numbers():
     ) == 1
 
 
-def test_per_call_tolerance_overrides_the_instance_setting():
-    detector = _detector(numeric_tolerance=1e-9)
-
-    # 1e-6 apart: equal at a 1e-5 tolerance, a conflict at the instance's 1e-9.
-    assert len(detector.detect_value_conflicts(_pair(1.0, 1.000001), "completed")) == 1
-    assert (
-        detector.detect_value_conflicts(_pair(1.0, 1.000001), "completed", numeric_tolerance=1e-5)
-        == []
-    )
-
-
 def test_large_integers_keep_their_difference():
     # Above 2**53 these are distinct integers that float() cannot separate.
     left, right = 2**53, 2**53 + 1
@@ -826,6 +815,15 @@ def test_integers_outside_the_float_range_do_not_raise():
 
     assert _detector().detect_value_conflicts(_pair(huge, huge), "completed") == []
     assert len(_detector().detect_value_conflicts(_pair(huge, huge + 1), "completed")) == 1
+
+
+def test_two_nans_are_the_same_missing_value():
+    rows = [
+        {"id": "d1", "completed": float("nan"), "source": "a.csv"},
+        {"id": "d1", "completed": float("nan"), "source": "b.csv"},
+    ]
+
+    assert _detector().detect_value_conflicts(rows, "completed") == []
 
 
 def test_nan_never_matches_a_finite_value():

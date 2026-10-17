@@ -98,35 +98,23 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _is_nan(value: Any) -> bool:
-    return isinstance(value, float) and math.isnan(value)
-
-
-def _within(left: Any, right: Any, tolerance: float) -> bool:
-    """True when two numbers are the same within ``tolerance``.
-
-    Integers stay integers: coercing them to float would merge distinct values
-    above 2**53 and raise OverflowError beyond the float range.
-    """
-    if isinstance(left, int) and isinstance(right, int):
-        return abs(left - right) <= tolerance
-    try:
-        return abs(left - right) <= tolerance
-    except OverflowError:
-        return left == right
+def _within(left: float, right: float, tolerance: float) -> bool:
+    """Absolute difference, for two finite floats."""
+    return abs(left - right) <= tolerance
 
 
 def _distinct_values(values: List[Any], tolerance: Optional[float]) -> List[Any]:
-    """Return one key per distinct value, comparing numbers by absolute difference.
+    """Return one key per distinct value, comparing finite numbers by difference.
 
-    Two numbers are the same when ``abs(a - b) <= tolerance``. Grouping is
-    complete-linkage: every pair inside a group satisfies it, which matters
+    Two finite numbers are the same when ``abs(a - b) <= tolerance``. Grouping
+    is complete-linkage: every pair inside a group satisfies it, which matters
     because the relation is not transitive (0, 0.8e-9 and 1.6e-9 with a 1e-9
     tolerance form two groups, not one).
 
-    NaN never matches anything, including another NaN, so each one is its own
-    group. Integers are not coerced to float, so integers above 2**53 stay
-    distinct and integers outside the float range do not raise.
+    Values that float arithmetic cannot represent faithfully fall back to exact
+    string comparison: NaN (a parse failure, not a measurement) and integers
+    beyond 2**53, where distinct values map to the same float. Integers outside
+    the float range therefore cannot raise either.
 
     Non-numbers are compared by their string form, exactly, and a number and
     the string that spells it are different values. The old code compared
@@ -135,33 +123,40 @@ def _distinct_values(values: List[Any], tolerance: Optional[float]) -> List[Any]
 
     ``tolerance`` of ``None`` or ``0`` means exact comparison for numbers.
     """
-    numbers = [value for value in values if _is_number(value)]
-    finite = [value for value in numbers if not _is_nan(value)]
-    groups = sum(1 for value in numbers if _is_nan(value))
+    numbers: List[float] = []
+    others: List[str] = []
 
-    if finite:
-        ordered = sorted(finite)
+    for value in values:
+        if value is None:
+            continue
+        if not _is_number(value):
+            others.append(str(value))
+            continue
+        try:
+            as_float = float(value)
+            if math.isnan(as_float):
+                raise ValueError("NaN is compared as a string")
+            if isinstance(value, int) and abs(value) > 2**53:
+                raise ValueError("integer beyond float precision is compared as a string")
+            numbers.append(as_float)
+        except (OverflowError, ValueError):
+            others.append(str(value))
+
+    groups = 0
+    if numbers:
+        ordered = sorted(numbers)
         if tolerance and tolerance > 0:
-            count = 1
+            groups = 1
             group_min = ordered[0]
             for value in ordered[1:]:
                 if not _within(value, group_min, tolerance):
-                    count += 1
+                    groups += 1
                     group_min = value
-            groups += count
         else:
-            groups += len(set(ordered))
+            groups = len(set(ordered))
 
     keys: List[Any] = [("number", index) for index in range(groups)]
-
-    others: List[str] = []
-    for value in values:
-        if value is None or _is_number(value):
-            continue
-        text = str(value)
-        if text not in others:
-            others.append(text)
-    keys.extend(others)
+    keys.extend(dict.fromkeys(others))
     return keys
 
 
@@ -218,7 +213,6 @@ class ConflictDetector:
         entities: Union[List[Dict[str, Any]], Dict[str, Any]],
         property_name: str,
         entity_type: Optional[str] = None,
-        numeric_tolerance: Optional[float] = None,
     ) -> List[Conflict]:
         """
         Detect property value conflicts.
@@ -227,18 +221,10 @@ class ConflictDetector:
             entities: List of entity dictionaries or Graph dictionary
             property_name: Property name to check
             entity_type: Optional entity type filter
-            numeric_tolerance: Compare numbers by absolute difference instead
-                of by string. ``None`` (the default) uses the instance setting,
-                which defaults to ``1e-9``; ``0`` means exact comparison for
-                numbers. Non-numbers are always compared exactly.
 
         Returns:
             List of detected conflicts
         """
-        tolerance = (
-            self.numeric_tolerance if numeric_tolerance is None else numeric_tolerance
-        )
-
         # Handle graph dictionary input
         if isinstance(entities, dict):
             if "entities" in entities:
@@ -357,7 +343,7 @@ class ConflictDetector:
                             )
 
                 # Check for value conflicts
-                unique_values = _distinct_values(values, tolerance)
+                unique_values = _distinct_values(values, self.numeric_tolerance)
 
                 if len(unique_values) > 1:
                     conflict = Conflict(
@@ -367,7 +353,7 @@ class ConflictDetector:
                         property_name=property_name,
                         conflicting_values=values,
                         sources=sources,
-                        confidence=self._calculate_conflict_confidence(values, sources, tolerance),
+                        confidence=self._calculate_conflict_confidence(values, sources),
                         severity=self._calculate_severity(property_name, values),
                         recommended_action=self._recommend_action(
                             property_name, values
@@ -645,10 +631,7 @@ class ConflictDetector:
             raise
 
     def _calculate_conflict_confidence(
-        self,
-        values: List[Any],
-        sources: List[Dict[str, Any]],
-        tolerance: Optional[float] = None,
+        self, values: List[Any], sources: List[Dict[str, Any]]
     ) -> float:
         """Calculate confidence score for conflict."""
         if not sources:
@@ -658,9 +641,7 @@ class ConflictDetector:
         avg_confidence = sum(s.get("confidence", 0.5) for s in sources) / len(sources)
 
         # Higher confidence if values are very different
-        distinct = _distinct_values(
-            values, self.numeric_tolerance if tolerance is None else tolerance
-        )
+        distinct = _distinct_values(values, self.numeric_tolerance)
         value_diversity = len(distinct) / len(values) if values else 0
 
         return min(1.0, avg_confidence * (1 + value_diversity))
@@ -1318,10 +1299,6 @@ class ConflictDetector:
         Returns:
             List of detected conflicts
         """
-        tolerance = (
-            self.numeric_tolerance if numeric_tolerance is None else numeric_tolerance
-        )
-
         # Handle graph dictionary input
         if isinstance(entities, dict):
             if "entities" in entities:
