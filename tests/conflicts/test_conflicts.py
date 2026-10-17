@@ -681,3 +681,64 @@ class TestConflictsModule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _two_source_detector(source_tracker):
+    return ConflictDetector(source_tracker=source_tracker)
+
+
+def test_float_noise_is_not_a_conflict():
+    """640.0 and 640.000000000001 are the same measurement."""
+    tracker = SourceTracker()
+    tracker.register_source("a.csv", "database", 0.9)
+    tracker.register_source("b.csv", "aggregate", 0.6)
+    detector = _two_source_detector(tracker)
+
+    rows = [
+        {"id": "d1", "completed": 640.0, "source": "a.csv"},
+        {"id": "d1", "completed": 640.000000000001, "source": "b.csv"},
+    ]
+
+    assert detector.detect_value_conflicts(rows, "completed") == []
+
+
+def test_a_real_difference_is_still_a_conflict():
+    tracker = SourceTracker()
+    tracker.register_source("a.csv", "database", 0.9)
+    tracker.register_source("b.csv", "aggregate", 0.6)
+    detector = _two_source_detector(tracker)
+
+    rows = [
+        {"id": "d1", "completed": 640.0, "source": "a.csv"},
+        {"id": "d1", "completed": 641.0, "source": "b.csv"},
+    ]
+
+    assert len(detector.detect_value_conflicts(rows, "completed")) == 1
+
+
+def test_zero_tolerance_keeps_the_exact_comparison():
+    tracker = SourceTracker()
+    tracker.register_source("a.csv", "database", 0.9)
+    tracker.register_source("b.csv", "aggregate", 0.6)
+    detector = ConflictDetector(source_tracker=tracker, numeric_tolerance=0)
+
+    rows = [
+        {"id": "d1", "completed": 640.0, "source": "a.csv"},
+        {"id": "d1", "completed": 640.000000000001, "source": "b.csv"},
+    ]
+
+    assert len(detector.detect_value_conflicts(rows, "completed")) == 1
+
+
+def test_strings_are_still_compared_exactly():
+    tracker = SourceTracker()
+    tracker.register_source("a.csv", "database", 0.9)
+    tracker.register_source("b.csv", "aggregate", 0.6)
+    detector = _two_source_detector(tracker)
+
+    rows = [
+        {"id": "d1", "status": "completed", "source": "a.csv"},
+        {"id": "d1", "status": "complete", "source": "b.csv"},
+    ]
+
+    assert len(detector.detect_value_conflicts(rows, "status")) == 1

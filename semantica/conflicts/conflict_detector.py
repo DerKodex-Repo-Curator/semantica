@@ -56,6 +56,7 @@ Author: Semantica Contributors
 License: MIT
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -92,6 +93,39 @@ class Conflict:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+def _tolerance_decimals(tolerance: float) -> int | None:
+    """Decimal places that make two numbers equal within ``tolerance``.
+
+    Returns ``None`` when the tolerance is not positive, which keeps the exact
+    string comparison this module used before.
+    """
+    if tolerance is None or tolerance <= 0:
+        return None
+    return max(0, math.ceil(-math.log10(tolerance)))
+
+
+def _distinct_values(values: List[Any], tolerance: float) -> List[Any]:
+    """Return one key per distinct value, comparing numbers within a tolerance.
+
+    Two values are the same when both are numbers and round to the same number
+    of decimals implied by ``tolerance``, or when they are not numbers and
+    their string forms match. Float noise between sources (640.0 and
+    640.000000000001) therefore stops counting as a disagreement.
+    """
+    decimals = _tolerance_decimals(tolerance)
+    keys: List[Any] = []
+    for value in values:
+        if value is None:
+            continue
+        if decimals is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
+            key: Any = round(float(value), decimals)
+        else:
+            key = str(value)
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 class ConflictDetector:
     """
     Conflict detector for multi-source conflict identification.
@@ -123,6 +157,10 @@ class ConflictDetector:
         self.track_provenance = self.config.get("track_provenance", True)
         self.conflict_fields = self.config.get("conflict_fields", {})
         self.confidence_threshold = self.config.get("confidence_threshold", 0.7)
+        # Numbers are compared within this tolerance, so the same measurement
+        # at different precisions from two sources is not a conflict. Set 0 to
+        # get the exact comparison back.
+        self.numeric_tolerance = float(self.config.get("numeric_tolerance", 1e-9))
         self.auto_resolve = self.config.get("auto_resolve", False)
 
         # Initialize progress tracker
@@ -268,7 +306,7 @@ class ConflictDetector:
                             )
 
                 # Check for value conflicts
-                unique_values = list(set(str(v) for v in values if v is not None))
+                unique_values = _distinct_values(values, self.numeric_tolerance)
 
                 if len(unique_values) > 1:
                     conflict = Conflict(
@@ -425,7 +463,7 @@ class ConflictDetector:
                 # Check for conflicting properties
                 for prop_name in ["type", "properties", "confidence"]:
                     values = [r.get(prop_name) for r in rel_list if prop_name in r]
-                    unique_values = list(set(str(v) for v in values if v is not None))
+                    unique_values = _distinct_values(values, self.numeric_tolerance)
 
                     if len(unique_values) > 1:
                         conflict = Conflict(
@@ -566,9 +604,8 @@ class ConflictDetector:
         avg_confidence = sum(s.get("confidence", 0.5) for s in sources) / len(sources)
 
         # Higher confidence if values are very different
-        value_diversity = (
-            len(set(str(v) for v in values)) / len(values) if values else 0
-        )
+        distinct = _distinct_values(values, self.numeric_tolerance)
+        value_diversity = len(distinct) / len(values) if values else 0
 
         return min(1.0, avg_confidence * (1 + value_diversity))
 
