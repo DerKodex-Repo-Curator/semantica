@@ -56,6 +56,7 @@ Author: Semantica Contributors
 License: MIT
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -97,6 +98,24 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _is_nan(value: Any) -> bool:
+    return isinstance(value, float) and math.isnan(value)
+
+
+def _within(left: Any, right: Any, tolerance: float) -> bool:
+    """True when two numbers are the same within ``tolerance``.
+
+    Integers stay integers: coercing them to float would merge distinct values
+    above 2**53 and raise OverflowError beyond the float range.
+    """
+    if isinstance(left, int) and isinstance(right, int):
+        return abs(left - right) <= tolerance
+    try:
+        return abs(left - right) <= tolerance
+    except OverflowError:
+        return left == right
+
+
 def _distinct_values(values: List[Any], tolerance: Optional[float]) -> List[Any]:
     """Return one key per distinct value, comparing numbers by absolute difference.
 
@@ -105,26 +124,35 @@ def _distinct_values(values: List[Any], tolerance: Optional[float]) -> List[Any]
     because the relation is not transitive (0, 0.8e-9 and 1.6e-9 with a 1e-9
     tolerance form two groups, not one).
 
+    NaN never matches anything, including another NaN, so each one is its own
+    group. Integers are not coerced to float, so integers above 2**53 stay
+    distinct and integers outside the float range do not raise.
+
     Non-numbers are compared by their string form, exactly, and a number and
     the string that spells it are different values. The old code compared
     everything as strings, so 640.0 and "640.0" used to match; they no longer
     do.
 
-    ``tolerance`` of ``None`` or ``0`` means exact comparison.
+    ``tolerance`` of ``None`` or ``0`` means exact comparison for numbers.
     """
-    numbers: List[float] = sorted(float(v) for v in values if _is_number(v))
-    keys: List[Any] = []
-    if numbers:
+    numbers = [value for value in values if _is_number(value)]
+    finite = [value for value in numbers if not _is_nan(value)]
+    groups = sum(1 for value in numbers if _is_nan(value))
+
+    if finite:
+        ordered = sorted(finite)
         if tolerance and tolerance > 0:
-            groups = 1
-            group_min = numbers[0]
-            for value in numbers[1:]:
-                if value - group_min > tolerance:
-                    groups += 1
+            count = 1
+            group_min = ordered[0]
+            for value in ordered[1:]:
+                if not _within(value, group_min, tolerance):
+                    count += 1
                     group_min = value
+            groups += count
         else:
-            groups = len(set(numbers))
-        keys.extend(("number", index) for index in range(groups))
+            groups += len(set(ordered))
+
+    keys: List[Any] = [("number", index) for index in range(groups)]
 
     others: List[str] = []
     for value in values:
@@ -190,6 +218,7 @@ class ConflictDetector:
         entities: Union[List[Dict[str, Any]], Dict[str, Any]],
         property_name: str,
         entity_type: Optional[str] = None,
+        numeric_tolerance: Optional[float] = None,
     ) -> List[Conflict]:
         """
         Detect property value conflicts.
@@ -198,10 +227,18 @@ class ConflictDetector:
             entities: List of entity dictionaries or Graph dictionary
             property_name: Property name to check
             entity_type: Optional entity type filter
+            numeric_tolerance: Compare numbers by absolute difference instead
+                of by string. ``None`` (the default) uses the instance setting,
+                which defaults to ``1e-9``; ``0`` means exact comparison for
+                numbers. Non-numbers are always compared exactly.
 
         Returns:
             List of detected conflicts
         """
+        tolerance = (
+            self.numeric_tolerance if numeric_tolerance is None else numeric_tolerance
+        )
+
         # Handle graph dictionary input
         if isinstance(entities, dict):
             if "entities" in entities:
@@ -320,7 +357,7 @@ class ConflictDetector:
                             )
 
                 # Check for value conflicts
-                unique_values = _distinct_values(values, self.numeric_tolerance)
+                unique_values = _distinct_values(values, tolerance)
 
                 if len(unique_values) > 1:
                     conflict = Conflict(
@@ -330,7 +367,7 @@ class ConflictDetector:
                         property_name=property_name,
                         conflicting_values=values,
                         sources=sources,
-                        confidence=self._calculate_conflict_confidence(values, sources),
+                        confidence=self._calculate_conflict_confidence(values, sources, tolerance),
                         severity=self._calculate_severity(property_name, values),
                         recommended_action=self._recommend_action(
                             property_name, values
@@ -608,7 +645,10 @@ class ConflictDetector:
             raise
 
     def _calculate_conflict_confidence(
-        self, values: List[Any], sources: List[Dict[str, Any]]
+        self,
+        values: List[Any],
+        sources: List[Dict[str, Any]],
+        tolerance: Optional[float] = None,
     ) -> float:
         """Calculate confidence score for conflict."""
         if not sources:
@@ -618,7 +658,9 @@ class ConflictDetector:
         avg_confidence = sum(s.get("confidence", 0.5) for s in sources) / len(sources)
 
         # Higher confidence if values are very different
-        distinct = _distinct_values(values, self.numeric_tolerance)
+        distinct = _distinct_values(
+            values, self.numeric_tolerance if tolerance is None else tolerance
+        )
         value_diversity = len(distinct) / len(values) if values else 0
 
         return min(1.0, avg_confidence * (1 + value_diversity))
@@ -637,7 +679,7 @@ class ConflictDetector:
                 value_range = max(numeric_values) - min(numeric_values)
                 if value_range > 1000:  # Large difference
                     return "high"
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
 
         return "medium"
@@ -1276,6 +1318,10 @@ class ConflictDetector:
         Returns:
             List of detected conflicts
         """
+        tolerance = (
+            self.numeric_tolerance if numeric_tolerance is None else numeric_tolerance
+        )
+
         # Handle graph dictionary input
         if isinstance(entities, dict):
             if "entities" in entities:

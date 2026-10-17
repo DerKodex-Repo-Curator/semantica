@@ -801,3 +801,46 @@ def test_none_tolerance_means_exact_numbers():
             _pair(640.0, 640.000000000001), "completed"
         )
     ) == 1
+
+
+def test_per_call_tolerance_overrides_the_instance_setting():
+    detector = _detector(numeric_tolerance=1e-9)
+
+    # 1e-6 apart: equal at a 1e-5 tolerance, a conflict at the instance's 1e-9.
+    assert len(detector.detect_value_conflicts(_pair(1.0, 1.000001), "completed")) == 1
+    assert (
+        detector.detect_value_conflicts(_pair(1.0, 1.000001), "completed", numeric_tolerance=1e-5)
+        == []
+    )
+
+
+def test_large_integers_keep_their_difference():
+    # Above 2**53 these are distinct integers that float() cannot separate.
+    left, right = 2**53, 2**53 + 1
+
+    assert len(_detector().detect_value_conflicts(_pair(left, right), "completed")) == 1
+
+
+def test_integers_outside_the_float_range_do_not_raise():
+    huge = 10**309
+
+    assert _detector().detect_value_conflicts(_pair(huge, huge), "completed") == []
+    assert len(_detector().detect_value_conflicts(_pair(huge, huge + 1), "completed")) == 1
+
+
+def test_nan_never_matches_a_finite_value():
+    rows = [
+        {"id": "d1", "completed": float("nan"), "source": "a.csv"},
+        {"id": "d1", "completed": 640.0, "source": "b.csv"},
+    ]
+
+    assert len(_detector().detect_value_conflicts(rows, "completed")) == 1
+
+
+def test_nan_in_either_order_is_a_conflict():
+    for left, right in ((float("nan"), 640.0), (640.0, float("nan"))):
+        rows = [
+            {"id": "d1", "completed": left, "source": "a.csv"},
+            {"id": "d1", "completed": right, "source": "b.csv"},
+        ]
+        assert len(_detector().detect_value_conflicts(rows, "completed")) == 1
