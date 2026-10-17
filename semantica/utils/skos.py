@@ -71,6 +71,13 @@ def validate_skos_hierarchy(
     validated hierarchy. Edges that are not hierarchy edges at all are always
     ignored.
 
+    ``strict`` recognises the endpoints under the names ``source`` and
+    ``source_id`` (and ``target`` / ``target_id``). The graph write layer also
+    accepts ``from``, ``to``, ``:START_ID`` and other spellings; an edge that
+    uses one of those is read by the write layer but looks endpoint-less here,
+    so it raises under ``strict``. Callers that pass raw, unmapped edges should
+    normalise the endpoint field names first.
+
     Note that an edge counts as a hierarchy edge when any of ``type``,
     ``edge_type``, ``relationship``, ``predicate`` or ``relation`` carries a
     SKOS hierarchy value. An edge that pairs a hierarchy predicate in one of
