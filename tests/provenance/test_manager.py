@@ -1914,3 +1914,51 @@ def test_verify_chain_passes_when_the_expectations_match(tmp_path):
     assert result["valid"] is True
     assert result["count_matches"] is True
     assert result["head_matches"] is True
+
+
+def test_an_unsequenced_record_makes_expectations_unverifiable(tmp_path):
+    """A row without a sequence_id is outside the chain but still exported."""
+    import sqlite3
+
+    storage = str(tmp_path / "prov.json")
+    manager = ProvenanceManager(storage_path=storage)
+    for index in range(3):
+        manager.track_entity(f"E-{index}", source="src", entity_type="row_set")
+
+    connection = sqlite3.connect(storage)
+    connection.execute(
+        "insert into provenance (entity_id, entity_type, activity_id, agent_id,"
+        " source_document, timestamp, first_seen, last_updated, confidence,"
+        " checksum, metadata, version, sequence_id)"
+        " select 'E-extra', entity_type, activity_id, agent_id, source_document,"
+        " timestamp, first_seen, last_updated, confidence, checksum, metadata,"
+        " version, NULL from provenance limit 1"
+    )
+    connection.commit()
+    connection.close()
+
+    result = ProvenanceManager(storage_path=storage).verify_chain(expected_count=3)
+
+    assert result["unsequenced_records"] == 1
+    assert result["valid"] is False
+
+
+def test_unsequenced_records_do_not_break_the_default_call(tmp_path):
+    import sqlite3
+
+    storage = str(tmp_path / "prov.json")
+    manager = ProvenanceManager(storage_path=storage)
+    manager.track_entity("E-0", source="src", entity_type="row_set")
+    connection = sqlite3.connect(storage)
+    connection.execute(
+        "insert into provenance (entity_id, entity_type, activity_id, agent_id,"
+        " source_document, timestamp, first_seen, last_updated, confidence,"
+        " checksum, metadata, version, sequence_id)"
+        " select 'E-extra', entity_type, activity_id, agent_id, source_document,"
+        " timestamp, first_seen, last_updated, confidence, checksum, metadata,"
+        " version, NULL from provenance limit 1"
+    )
+    connection.commit()
+    connection.close()
+
+    assert ProvenanceManager(storage_path=storage).verify_chain()["valid"] is True
