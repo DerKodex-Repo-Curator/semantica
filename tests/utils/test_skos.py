@@ -92,3 +92,20 @@ def test_strict_mode_accepts_a_well_formed_edge():
         [{"type": "skos:broader", "source": "B", "target": "A"}],
         strict=True,
     )
+
+
+def test_strict_mode_uses_the_fallback_endpoint_field():
+    """source=None with a usable source_id is not a malformed edge."""
+    validate_skos_hierarchy(
+        [{"type": "skos:broader", "source": None, "source_id": "B", "target": "A"}],
+        strict=True,
+    )
+
+
+def test_strict_mode_still_rejects_an_edge_with_no_endpoint_at_all():
+    import pytest
+
+    with pytest.raises(ValueError):
+        validate_skos_hierarchy(
+            [{"type": "skos:broader", "source": None, "target": "  "}], strict=True
+        )

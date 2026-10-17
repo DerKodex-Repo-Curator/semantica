@@ -863,7 +863,7 @@ class GraphSession:
         existing_edges = [
             edge for edge in self.graph.find_edges() if is_skos_hierarchy_edge(edge)
         ]
-        validate_skos_hierarchy(hierarchy_edges, existing_edges)
+        validate_skos_hierarchy(hierarchy_edges, existing_edges, strict=True)
 
     def add_nodes_and_edges(
         self,

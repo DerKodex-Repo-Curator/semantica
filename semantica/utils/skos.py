@@ -32,8 +32,11 @@ def _child_parent(edge: Mapping[str, object]) -> tuple[str, str] | None:
     if edge_type not in _HIERARCHY_EDGE_TYPES:
         return None
 
-    raw_source = edge.get("source", edge.get("source_id"))
-    raw_target = edge.get("target", edge.get("target_id"))
+    # ``or`` rather than ``dict.get(key, fallback)``: the primary key can be
+    # present and empty (a mapper that emits source=None), which the graph's
+    # own endpoint normalisation treats as "use the fallback".
+    raw_source = edge.get("source") or edge.get("source_id")
+    raw_target = edge.get("target") or edge.get("target_id")
     if raw_source is None or raw_target is None:
         return None
     source = str(raw_source).strip()
