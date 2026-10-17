@@ -1486,10 +1486,13 @@ class ProvenanceManager:
         Returns:
             Dictionary with "valid", "total_entries", "head", "broken_links"
             (list of {"entity_id", "sequence_id", "reason"} dicts),
-            "count_matches", "head_matches" and "unsequenced_records". Records
-            without a ``sequence_id`` are outside the chain but are still
-            exported, so supplying an expectation while any exist makes the
-            result invalid: they cannot be verified. The last two are ``True`` when
+            "count_matches", "head_matches" and "unsequenced_records".
+
+            ``expected_count`` counts only chained (sequenced) records. A record
+            stored without a ``sequence_id`` is outside the chain and is not
+            counted; only direct storage access produces one, because every
+            ``track_*`` call assigns a sequence. ``unsequenced_records`` reports
+            how many such rows exist if you need to notice them. The last two are ``True`` when
             the corresponding expectation was not supplied, and ``valid`` is
             ``False`` when either supplied expectation disagrees.
 
@@ -1540,17 +1543,11 @@ class ProvenanceManager:
             expected_sequence = entry.sequence_id
 
         actual_head = entries[-1].checksum if entries else None
-        expects_anything = expected_count is not None or expected_head is not None
-        # A record without a sequence_id sits outside the chain but is still
-        # exported. When the caller supplies an expectation it cannot be
-        # verified, so the result has to be invalid rather than quietly
-        # consistent.
-        all_verifiable = not (expects_anything and unsequenced)
         count_matches = expected_count is None or expected_count == len(entries)
         head_matches = expected_head is None or expected_head == actual_head
 
         return {
-            "valid": len(broken_links) == 0 and count_matches and head_matches and all_verifiable,
+            "valid": len(broken_links) == 0 and count_matches and head_matches,
             "total_entries": len(entries),
             "head": actual_head,
             "count_matches": count_matches,

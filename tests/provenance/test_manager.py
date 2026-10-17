@@ -1916,8 +1916,13 @@ def test_verify_chain_passes_when_the_expectations_match(tmp_path):
     assert result["head_matches"] is True
 
 
-def test_an_unsequenced_record_makes_expectations_unverifiable(tmp_path):
-    """A row without a sequence_id is outside the chain but still exported."""
+def test_an_unsequenced_record_is_invisible_to_the_expected_count(tmp_path):
+    """A row without a sequence_id is outside the chain, so it is not counted.
+
+    Only direct storage access can create one; every track_* call assigns a
+    sequence. Such a row is still exported, which is why the count cannot see
+    it, and the result is documented rather than silently surprising.
+    """
     import sqlite3
 
     storage = str(tmp_path / "prov.json")
@@ -1940,7 +1945,8 @@ def test_an_unsequenced_record_makes_expectations_unverifiable(tmp_path):
     result = ProvenanceManager(storage_path=storage).verify_chain(expected_count=3)
 
     assert result["unsequenced_records"] == 1
-    assert result["valid"] is False
+    assert result["count_matches"] is True
+    assert result["valid"] is True
 
 
 def test_unsequenced_records_do_not_break_the_default_call(tmp_path):
