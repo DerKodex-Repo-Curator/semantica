@@ -56,7 +56,6 @@ Author: Semantica Contributors
 License: MIT
 """
 
-import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -93,36 +92,48 @@ class Conflict:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-def _tolerance_decimals(tolerance: float) -> int | None:
-    """Decimal places that make two numbers equal within ``tolerance``.
+def _is_number(value: Any) -> bool:
+    """True for int and float, but not for bool (which subclasses int)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
-    Returns ``None`` when the tolerance is not positive, which keeps the exact
-    string comparison this module used before.
+
+def _distinct_values(values: List[Any], tolerance: Optional[float]) -> List[Any]:
+    """Return one key per distinct value, comparing numbers by absolute difference.
+
+    Two numbers are the same when ``abs(a - b) <= tolerance``. Grouping is
+    complete-linkage: every pair inside a group satisfies it, which matters
+    because the relation is not transitive (0, 0.8e-9 and 1.6e-9 with a 1e-9
+    tolerance form two groups, not one).
+
+    Non-numbers are compared by their string form, exactly, and a number and
+    the string that spells it are different values. The old code compared
+    everything as strings, so 640.0 and "640.0" used to match; they no longer
+    do.
+
+    ``tolerance`` of ``None`` or ``0`` means exact comparison.
     """
-    if tolerance is None or tolerance <= 0:
-        return None
-    return max(0, math.ceil(-math.log10(tolerance)))
-
-
-def _distinct_values(values: List[Any], tolerance: float) -> List[Any]:
-    """Return one key per distinct value, comparing numbers within a tolerance.
-
-    Two values are the same when both are numbers and round to the same number
-    of decimals implied by ``tolerance``, or when they are not numbers and
-    their string forms match. Float noise between sources (640.0 and
-    640.000000000001) therefore stops counting as a disagreement.
-    """
-    decimals = _tolerance_decimals(tolerance)
+    numbers: List[float] = sorted(float(v) for v in values if _is_number(v))
     keys: List[Any] = []
-    for value in values:
-        if value is None:
-            continue
-        if decimals is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
-            key: Any = round(float(value), decimals)
+    if numbers:
+        if tolerance and tolerance > 0:
+            groups = 1
+            group_min = numbers[0]
+            for value in numbers[1:]:
+                if value - group_min > tolerance:
+                    groups += 1
+                    group_min = value
         else:
-            key = str(value)
-        if key not in keys:
-            keys.append(key)
+            groups = len(set(numbers))
+        keys.extend(("number", index) for index in range(groups))
+
+    others: List[str] = []
+    for value in values:
+        if value is None or _is_number(value):
+            continue
+        text = str(value)
+        if text not in others:
+            others.append(text)
+    keys.extend(others)
     return keys
 
 
@@ -157,10 +168,13 @@ class ConflictDetector:
         self.track_provenance = self.config.get("track_provenance", True)
         self.conflict_fields = self.config.get("conflict_fields", {})
         self.confidence_threshold = self.config.get("confidence_threshold", 0.7)
-        # Numbers are compared within this tolerance, so the same measurement
-        # at different precisions from two sources is not a conflict. Set 0 to
-        # get the exact comparison back.
-        self.numeric_tolerance = float(self.config.get("numeric_tolerance", 1e-9))
+        # Two numbers are the same when they differ by at most this much, so
+        # the same measurement at different precisions from two sources is not
+        # a conflict. None or 0 keeps the exact comparison.
+        tolerance_config = self.config.get("numeric_tolerance", 1e-9)
+        self.numeric_tolerance = (
+            None if tolerance_config is None else float(tolerance_config)
+        )
         self.auto_resolve = self.config.get("auto_resolve", False)
 
         # Initialize progress tracker
@@ -327,7 +341,7 @@ class ConflictDetector:
 
                     self.logger.warning(
                         f"Value conflict detected: {entity_id}.{property_name} "
-                        f"has conflicting values: {unique_values}"
+                        f"has conflicting values: {values}"
                     )
                 
                 remaining_groups = total_groups - (j + 1)
@@ -1000,8 +1014,8 @@ class ConflictDetector:
                             except (ValueError, TypeError):
                                 normalized_values.append(v)
 
-                        unique_values = list(
-                            set(str(v) for v in normalized_values if v is not None)
+                        unique_values = _distinct_values(
+                            normalized_values, self.numeric_tolerance
                         )
 
                         if len(unique_values) > 1:
@@ -1027,7 +1041,7 @@ class ConflictDetector:
 
                             self.logger.warning(
                                 f"Temporal conflict detected: {entity_id}.{prop_name} "
-                                f"has conflicting values: {unique_values}"
+                                f"has conflicting values: {values}"
                             )
                 
                 remaining_groups = total_groups - (j + 1)

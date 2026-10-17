@@ -742,3 +742,62 @@ def test_strings_are_still_compared_exactly():
     ]
 
     assert len(detector.detect_value_conflicts(rows, "status")) == 1
+
+
+def _detector(**kwargs):
+    tracker = SourceTracker()
+    tracker.register_source("a.csv", "database", 0.9)
+    tracker.register_source("b.csv", "aggregate", 0.6)
+    return ConflictDetector(source_tracker=tracker, **kwargs)
+
+
+def _pair(left, right):
+    return [
+        {"id": "d1", "completed": left, "source": "a.csv"},
+        {"id": "d1", "completed": right, "source": "b.csv"},
+    ]
+
+
+def test_a_difference_just_under_the_tolerance_is_equal():
+    # 9e-10 is below 1e-9, where rounding-based comparison would split the pair.
+    assert _detector().detect_value_conflicts(_pair(0.1, 0.1000000009), "completed") == []
+
+
+def test_a_difference_exactly_at_the_tolerance_is_equal():
+    assert _detector().detect_value_conflicts(_pair(0.1, 0.100000001), "completed") == []
+
+
+def test_a_difference_just_over_the_tolerance_is_a_conflict():
+    assert len(_detector().detect_value_conflicts(_pair(0.1, 0.100000002), "completed")) == 1
+
+
+def test_grouping_is_complete_linkage_not_transitive():
+    """0 and 1.6e-9 are more than one tolerance apart, so they stay two groups.
+
+    A naive chain of pairwise comparisons would merge all three.
+    """
+    rows = [
+        {"id": "d1", "completed": 0.0, "source": "a.csv"},
+        {"id": "d1", "completed": 0.8e-9, "source": "b.csv"},
+        {"id": "d1", "completed": 1.6e-9, "source": "c.csv"},
+    ]
+
+    assert len(_detector().detect_value_conflicts(rows, "completed")) == 1
+
+
+def test_a_number_and_its_string_form_are_a_conflict():
+    """Declared behaviour change: type disagreement counts."""
+    assert len(_detector().detect_value_conflicts(_pair(640.0, "640.0"), "completed")) == 1
+
+
+def test_int_and_float_of_the_same_value_are_equal():
+    """Declared behaviour change: 640 and 640.0 used to conflict, and no longer do."""
+    assert _detector().detect_value_conflicts(_pair(640, 640.0), "completed") == []
+
+
+def test_none_tolerance_means_exact_numbers():
+    assert len(
+        _detector(numeric_tolerance=None).detect_value_conflicts(
+            _pair(640.0, 640.000000000001), "completed"
+        )
+    ) == 1
