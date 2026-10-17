@@ -47,6 +47,8 @@ def _child_parent(edge: Mapping[str, object]) -> tuple[str, str] | None:
 def validate_skos_hierarchy(
     new_edges: Iterable[Mapping[str, object]],
     existing_edges: Iterable[Mapping[str, object]] = (),
+    *,
+    strict: bool = False,
 ) -> None:
     """Raise ``ValueError`` when adding ``new_edges`` would introduce a cycle.
 
@@ -57,6 +59,20 @@ def validate_skos_hierarchy(
 
     ``existing_edges`` supplies the SKOS hierarchy edges already persisted in
     the graph so that cycles spanning old and new edges are still caught.
+
+    Edges that use a hierarchy predicate but carry no usable ``source`` or
+    ``target`` are skipped by default, which is the behaviour the tests have
+    pinned since the function was added. Pass ``strict=True`` to turn that into
+    a ``ValueError`` instead: a batch from a mapper that forgot to fill the
+    endpoints is a caller error, and skipping it reports a malformed input as a
+    validated hierarchy. Edges that are not hierarchy edges at all are always
+    ignored.
+
+    Note that an edge counts as a hierarchy edge when any of ``type``,
+    ``edge_type``, ``relationship``, ``predicate`` or ``relation`` carries a
+    SKOS hierarchy value. An edge that pairs a hierarchy predicate in one of
+    those fields with an unrelated value in another is therefore treated as a
+    hierarchy edge, and under ``strict`` it raises if it has no endpoints.
     Only the concepts touched by ``new_edges`` are checked, though: a cycle
     that already exists entirely within ``existing_edges`` must not block an
     unrelated write elsewhere in the graph.
@@ -71,6 +87,10 @@ def validate_skos_hierarchy(
     for edge in new_edges:
         pair = _child_parent(edge)
         if pair is None:
+            if strict and is_skos_hierarchy_edge(edge):
+                raise ValueError(
+                    "SKOS hierarchy edge is missing source or target: %r" % (dict(edge),)
+                )
             continue
         child, parent = pair
         parents[child].add(parent)
